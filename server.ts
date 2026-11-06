@@ -3,6 +3,8 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
+import mammoth from 'mammoth';
+import * as XLSX from 'xlsx';
 
 dotenv.config();
 
@@ -256,6 +258,110 @@ function transformDalleJsonIfPresent(text: string): string {
   return text;
 }
 
+// Comprehensive multi-format file processor (Word docs, Excel sheets, PDFs, Code, Media, etc.)
+async function processAttachmentForGemini(att: { name: string; mimeType: string; data: string; size?: number }) {
+  if (!att.data) return null;
+  const base64Data = att.data.includes(',') ? att.data.split(',')[1] : att.data;
+  const buffer = Buffer.from(base64Data, 'base64');
+  const filename = att.name || 'document';
+  const ext = (filename.split('.').pop() || '').toLowerCase();
+  const mime = (att.mimeType || '').toLowerCase();
+
+  // 1. Native Image formats for Gemini
+  if (mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'heic', 'heif'].includes(ext)) {
+    const validMime = mime.startsWith('image/') ? mime : (ext === 'jpg' ? 'image/jpeg' : `image/${ext}`);
+    return {
+      inlineData: {
+        mimeType: validMime,
+        data: base64Data,
+      },
+    };
+  }
+
+  // 2. Native PDF format for Gemini
+  if (mime === 'application/pdf' || ext === 'pdf') {
+    return {
+      inlineData: {
+        mimeType: 'application/pdf',
+        data: base64Data,
+      },
+    };
+  }
+
+  // 3. Audio & Video formats supported by Gemini
+  if (mime.startsWith('audio/') || mime.startsWith('video/')) {
+    return {
+      inlineData: {
+        mimeType: mime,
+        data: base64Data,
+      },
+    };
+  }
+
+  // 4. Word Documents (.docx, .doc)
+  if (ext === 'docx' || ext === 'doc' || mime.includes('wordprocessingml') || mime.includes('msword')) {
+    try {
+      const docxResult = await mammoth.extractRawText({ buffer });
+      const text = docxResult.value?.trim() || '';
+      return {
+        text: `[Attached Word Document: ${filename}]\n\n--- Document Text Content ---\n${text || '(Document contains no text or is an empty Word document)'}`,
+      };
+    } catch (docxErr: any) {
+      console.warn(`Failed to parse docx ${filename}:`, docxErr?.message);
+    }
+  }
+
+  // 5. Excel Spreadsheets (.xlsx, .xls, .csv, .tsv, .ods)
+  if (['xlsx', 'xls', 'csv', 'tsv', 'ods'].includes(ext) || mime.includes('spreadsheet') || mime.includes('excel')) {
+    try {
+      const workbook = XLSX.read(buffer, { type: 'buffer' });
+      let excelSummary = `[Attached Excel Spreadsheet: ${filename}]\n`;
+      workbook.SheetNames.forEach((sheetName) => {
+        const worksheet = workbook.Sheets[sheetName];
+        const csvData = XLSX.utils.sheet_to_csv(worksheet);
+        excelSummary += `\n--- Sheet: "${sheetName}" ---\n${csvData.slice(0, 50000) || '(Empty Sheet)'}\n`;
+      });
+      return {
+        text: excelSummary,
+      };
+    } catch (xlsxErr: any) {
+      console.warn(`Failed to parse spreadsheet ${filename}:`, xlsxErr?.message);
+    }
+  }
+
+  // 6. Text files, Code, JSON, Markdown, XML, HTML, Scripts, Configuration
+  const textExtensions = [
+    'txt', 'text', 'md', 'markdown', 'csv', 'tsv', 'json', 'xml', 'yaml', 'yml',
+    'js', 'jsx', 'ts', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'hpp', 'cs', 'go',
+    'rs', 'php', 'rb', 'swift', 'kt', 'sql', 'html', 'htm', 'css', 'scss', 'sass',
+    'less', 'sh', 'bash', 'zsh', 'bat', 'ps1', 'log', 'env', 'ini', 'toml', 'cfg', 'conf', 'rtf'
+  ];
+
+  if (textExtensions.includes(ext) || mime.startsWith('text/') || mime.includes('json') || mime.includes('xml')) {
+    try {
+      const textContent = buffer.toString('utf-8');
+      return {
+        text: `[Attached Text File: ${filename}]\n\`\`\`${ext || 'text'}\n${textContent.slice(0, 100000)}\n\`\`\``,
+      };
+    } catch {}
+  }
+
+  // 7. General binary fallback: extract human-readable strings and pass file metadata
+  try {
+    const rawString = buffer.toString('utf-8');
+    const printableChars = rawString.replace(/[\x00-\x08\x0E-\x1F\x7F-\xFF]/g, ' ').trim();
+    if (printableChars.length > 50) {
+      return {
+        text: `[Attached File: ${filename} (Size: ${att.size ? `${(att.size / 1024).toFixed(1)} KB` : 'binary'})]\n\nExtracted content preview:\n${printableChars.slice(0, 30000)}`,
+      };
+    }
+  } catch {}
+
+  return {
+    text: `[Attached File: ${filename} (Type: ${att.mimeType || ext || 'file'}, Size: ${att.size ? `${(att.size / 1024).toFixed(1)} KB` : 'unknown'})]`,
+  };
+}
+
 // Streaming Chat API Endpoint with SSE powered by Gemini API with Failover
 app.post('/api/chat', async (req, res) => {
   try {
@@ -353,14 +459,13 @@ CRITICAL INSTRUCTIONS FOR RESPONSES:
       const parts: any[] = [];
       if (Array.isArray(msg.attachments)) {
         for (const att of msg.attachments) {
-          if (att.data && att.mimeType) {
-            const base64Data = att.data.includes(',') ? att.data.split(',')[1] : att.data;
-            parts.push({
-              inlineData: {
-                mimeType: att.mimeType,
-                data: base64Data,
-              },
-            });
+          try {
+            const processedPart = await processAttachmentForGemini(att);
+            if (processedPart) {
+              parts.push(processedPart);
+            }
+          } catch (attErr: any) {
+            console.warn('Error processing attachment:', attErr?.message);
           }
         }
       }

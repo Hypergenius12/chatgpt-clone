@@ -22,6 +22,11 @@ import {
   Image as ImageIcon,
   BookOpen,
   Lightbulb,
+  FileText,
+  FileSpreadsheet,
+  FileCode,
+  FileArchive,
+  UploadCloud,
 } from 'lucide-react';
 import { Message, ModelId, Attachment } from '../types/chat';
 import { MarkdownRenderer } from './MarkdownRenderer';
@@ -108,20 +113,29 @@ export const ChatArea: React.FC<Props> = ({
     }
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  const [isDragging, setIsDragging] = useState(false);
 
-    Array.from(files).forEach((file) => {
+  const addFiles = (fileList: File[]) => {
+    fileList.forEach((file) => {
       const reader = new FileReader();
       reader.onload = () => {
         const data = reader.result as string;
+        const ext = file.name.split('.').pop()?.toLowerCase() || '';
+        let mime = file.type || 'application/octet-stream';
+        if (!file.type) {
+          if (ext === 'docx') mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+          else if (ext === 'doc') mime = 'application/msword';
+          else if (ext === 'xlsx') mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+          else if (ext === 'xls') mime = 'application/vnd.ms-excel';
+          else if (ext === 'csv') mime = 'text/csv';
+          else if (ext === 'pdf') mime = 'application/pdf';
+        }
         setAttachments((prev) => [
           ...prev,
           {
             id: Math.random().toString(36).substring(7),
             name: file.name,
-            mimeType: file.type || 'application/octet-stream',
+            mimeType: mime,
             data,
             size: file.size,
           },
@@ -129,7 +143,66 @@ export const ChatArea: React.FC<Props> = ({
       };
       reader.readAsDataURL(file);
     });
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    addFiles(Array.from(files));
     e.target.value = '';
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      addFiles(Array.from(e.dataTransfer.files));
+    }
+  };
+
+  const renderAttachmentIcon = (name: string, mime: string) => {
+    const ext = name.split('.').pop()?.toLowerCase() || '';
+    if (ext === 'docx' || ext === 'doc' || mime.includes('word')) {
+      return (
+        <div className="w-5 h-5 rounded bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold text-[9px] shrink-0">
+          DOC
+        </div>
+      );
+    }
+    if (['xlsx', 'xls', 'csv', 'tsv'].includes(ext) || mime.includes('spreadsheet') || mime.includes('excel')) {
+      return (
+        <div className="w-5 h-5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold text-[9px] shrink-0">
+          XLS
+        </div>
+      );
+    }
+    if (ext === 'pdf' || mime.includes('pdf')) {
+      return (
+        <div className="w-5 h-5 rounded bg-red-500/15 text-red-600 dark:text-red-400 flex items-center justify-center font-bold text-[9px] shrink-0">
+          PDF
+        </div>
+      );
+    }
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) {
+      return <FileArchive size={14} className="text-amber-500 shrink-0" />;
+    }
+    if (['js', 'ts', 'jsx', 'tsx', 'py', 'json', 'html', 'css', 'sql'].includes(ext)) {
+      return <FileCode size={14} className="text-violet-500 shrink-0" />;
+    }
+    return <FileText size={14} className="text-zinc-500 shrink-0" />;
   };
 
   const handleCopy = (id: string, text: string) => {
@@ -195,7 +268,25 @@ export const ChatArea: React.FC<Props> = ({
   ];
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-white dark:bg-[#212121] overflow-hidden relative">
+    <div
+      className="flex-1 flex flex-col h-full bg-white dark:bg-[#212121] overflow-hidden relative"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Drag & drop visual dropzone overlay */}
+      {isDragging && (
+        <div className="absolute inset-0 z-50 bg-emerald-500/10 dark:bg-emerald-500/20 backdrop-blur-xs border-2 border-dashed border-emerald-500 rounded-3xl m-3 flex flex-col items-center justify-center pointer-events-none transition-all">
+          <UploadCloud size={48} className="text-emerald-500 animate-bounce mb-3" />
+          <div className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
+            Drop files to attach
+          </div>
+          <div className="text-xs text-zinc-500 mt-1">
+            Word documents (.docx), Excel spreadsheets (.xlsx, .csv), PDFs, Code, & any file
+          </div>
+        </div>
+      )}
+
       {/* Messages area or Empty Greeting */}
       <div className="flex-1 overflow-y-auto px-4 md:px-6 py-4 flex flex-col">
         {messages.length === 0 ? (
@@ -248,17 +339,25 @@ export const ChatArea: React.FC<Props> = ({
                           {message.attachments.map((att) => (
                             <div
                               key={att.id}
-                              className="relative rounded-xl overflow-hidden border border-zinc-200 dark:border-zinc-700 max-w-[200px] max-h-[160px]"
+                              className="relative rounded-2xl overflow-hidden border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800/90 shadow-xs"
                             >
                               {att.mimeType.startsWith('image/') ? (
                                 <img
                                   src={att.data}
                                   alt={att.name}
-                                  className="object-cover w-full h-full"
+                                  className="object-cover max-w-[240px] max-h-[180px] rounded-2xl"
                                 />
                               ) : (
-                                <div className="p-3 bg-zinc-100 dark:bg-zinc-800 text-xs font-mono truncate">
-                                  {att.name}
+                                <div className="flex items-center gap-2.5 p-2.5 px-3.5 max-w-[280px]">
+                                  {renderAttachmentIcon(att.name, att.mimeType)}
+                                  <div className="min-w-0">
+                                    <div className="text-xs font-semibold text-zinc-900 dark:text-zinc-100 truncate">
+                                      {att.name}
+                                    </div>
+                                    <div className="text-[10px] text-zinc-400 font-mono mt-0.5">
+                                      {att.size ? `${(att.size / 1024).toFixed(0)} KB` : 'Document'}
+                                    </div>
+                                  </div>
                                 </div>
                               )}
                             </div>
@@ -488,7 +587,7 @@ export const ChatArea: React.FC<Props> = ({
               {attachments.map((att) => (
                 <div
                   key={att.id}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-xs font-medium text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700"
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-100 dark:bg-zinc-800 text-xs font-medium text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700 shadow-xs"
                 >
                   {att.mimeType.startsWith('image/') ? (
                     <img
@@ -497,14 +596,22 @@ export const ChatArea: React.FC<Props> = ({
                       className="w-5 h-5 rounded object-cover"
                     />
                   ) : (
-                    <Paperclip size={12} />
+                    renderAttachmentIcon(att.name, att.mimeType)
                   )}
-                  <span className="truncate max-w-[120px]">{att.name}</span>
+                  <div className="flex flex-col min-w-0">
+                    <span className="truncate max-w-[130px] font-medium leading-tight">{att.name}</span>
+                    {att.size && (
+                      <span className="text-[10px] text-zinc-400 leading-tight">
+                        {(att.size / 1024).toFixed(0)} KB
+                      </span>
+                    )}
+                  </div>
                   <button
                     onClick={() =>
                       setAttachments((prev) => prev.filter((a) => a.id !== att.id))
                     }
-                    className="p-0.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+                    className="p-1 rounded-md text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors ml-1"
+                    aria-label="Remove attachment"
                   >
                     <X size={12} />
                   </button>
@@ -528,12 +635,11 @@ export const ChatArea: React.FC<Props> = ({
           <div className="flex items-center justify-between pt-2 border-t border-transparent">
             {/* Left buttons: Attach + tool pills */}
             <div className="flex items-center gap-1.5 flex-wrap">
-              {/* File upload hidden input */}
+              {/* File upload hidden input - accepts ANY file format */}
               <input
                 ref={fileInputRef}
                 type="file"
                 multiple
-                accept="image/*,.txt,.pdf,.md,.csv,.json"
                 onChange={handleFileUpload}
                 className="hidden"
               />
